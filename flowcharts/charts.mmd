@@ -1,0 +1,21 @@
+graph TD
+  A[Code Commit GitHub] --> B[Argo Workflows CI]
+  B --> B1[Lint]
+  B --> B2[Test]
+  B --> B3[Docker Build]
+  B --> B4[Push Image]
+  B4 --> C[Git Push image tag ]
+  C --> D[Argo CD ]
+  D --> D1[Helm]
+  D --> D2[Sync to Clusters]
+  D --> D3[Health Check & Drift Monitor]
+  D3 --> E[Slack Notifications]
+  D2 --> F[Prod]
+  D3 --> G[Rollback / Self-Healing]
+  D2 --> I[Dev ]
+  D2 --> J[Stage]
+  %% Apply styles
+  %% classDef argocdStyle fill:#f9f,stroke:#333,stroke-width:2px;
+  %% class D argocdStyle;
+  style B stroke:#2962FF
+  style D stroke:#2962FF
