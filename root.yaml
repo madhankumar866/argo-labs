@@ -1,0 +1,66 @@
+# apiVersion: argoproj.io/v1alpha1
+# kind: Application
+# metadata:
+#   name: application-from-scratch
+# spec:
+#   destination:
+#     namespace: default
+#     server: https://kubernetes.default.svc
+#   project: default
+#   source:
+#   # It's possible to override helm values through different ways such as "valueFiles", "values", "valuesObject" and "parameters". 
+#   # Values injections have the following order of precedence parameters > valuesObject > values > valueFiles > helm repository values.yaml Or rather
+#           #   helm:
+#           #      releaseName: application-from-helm
+#           #      valueFiles:
+#           #        - custom-values.yaml
+#           #      values: |
+#           #        replicaCount: 3
+#           #      valuesObject:
+#           #        replicaCount: 5
+#           #      parameters:
+#           #        - name: "replicaCount"
+#           #          value: "1"
+#     path: v03-argocd-applications/helm/nginx
+#     repoURL: https://github.com/devopshobbies/argocd-tutorial.git
+#     targetRevision: main
+
+# apiVersion: argoproj.io/v1alpha1
+# kind: Application
+# metadata:
+#   name: guestbook
+#   namespace: argocd
+# spec:
+#   project: default
+#   source:
+#     repoURL: https://github.com/argoproj/argocd-example-apps
+#     targetRevision: HEAD
+#     path: guestbook
+#   destination:
+#     server: https://kubernetes.default.svc
+#     namespace: default
+#   syncPolicy:
+#     automated: {}
+
+
+
+
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: apps-of-apps
+  namespace: argocd
+spec:
+  project: default
+  source:
+    repoURL: https://github.com/madhankumar866/argo-labs.git
+    targetRevision: app-of-apps
+    path: Appofapps
+    directory:
+      recurse: true
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: argocd
+  syncPolicy:
+    automated: {}
+
