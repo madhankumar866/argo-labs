@@ -24,6 +24,9 @@ nodes:
   - containerPort: 30443
     hostPort: 30443
     protocol: TCP
+  - containerPort: 32746
+    hostPort: 32746
+    protocol: TCP    
 - role: worker
   labels:
     node-type: worker-1
