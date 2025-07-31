@@ -108,9 +108,7 @@ install_argocd() {
     kubectl wait --for=condition=available --timeout=600s deployment/argocd-dex-server -n argocd
     
     print_success "ArgoCD installed successfully"
-}
 
-setup_argocd_access() {
     print_step "Setting up ArgoCD access..."
     
     # Patch ArgoCD server service to NodePort for easy access
@@ -134,6 +132,43 @@ setup_argocd_access() {
     echo "Then access: https://localhost:8080"
     echo "============================================"
 }
+install_argo_workflows() {
+    ARGO_WORKFLOWS_VERSION="v3.7.0" # Specify the version you want to install
+    print_step "Installing Argo Workflows version $ARGO_WORKFLOWS_VERSION..."
+    # Create argo namespace
+    kubectl create namespace argo --dry-run=client -o yaml | kubectl apply -f -
+    # Install Argo Workflows
+    kubectl apply -n argo -f https://github.com/argoproj/argo-workflows/releases/download/$ARGO_WORKFLOWS_VERSION/install.yaml
+    if [ $? -ne 0 ]; then
+        print_error "Failed to install Argo Workflows. Please check the logs."
+        exit 1
+    fi
+    # Wait for Argo Workflows controller to be ready
+    echo "####Waiting for Argo Workflows controller to be ready..."
+    kubectl wait --for=condition=available --timeout=600s deployment/argo-server -n argo
+    print_success "Argo Workflows installed successfully"
+
+    echo "####Changing the authentication mode to Server Authentication."
+    kubectl patch deployment \
+    argo-server \
+    --namespace argo \
+    --type='json' \
+    -p='[{"op": "replace", "path": "/spec/template/spec/containers/0/args", "value": ["server","--auth-mode=server"]}]'
+    
+    echo "####Argo Workflows server is now running with auth-mode set to 'server'."
+    if ! kubectl get rolebinding argo-default-admin -n argo &> /dev/null; then
+        kubectl create rolebinding argo-default-admin --clusterrole=admin --serviceaccount=argo:default -n argo
+        echo "####Role-Based Access Control (RBAC) to grant Argo Admin-level permissions "
+    else
+        echo "####RoleBinding 'argo-default-admin' already exists. Skipping creation."
+    fi
+    
+    # kubectl -n argo port-forward service/argo-server 2746:2746
+    kubectl patch svc argo-server -n argo -p '{"spec": {"type": "NodePort", "ports": [{"port": 2746, "targetPort": 2746, "nodePort": 32746}]}}'
+    echo "####Argo Workflows UI is available at http://localhost:32746"
+}
+
+
 
 install_argocd_cli() {
     print_step "Installing ArgoCD CLI..."
@@ -164,37 +199,6 @@ install_argocd_cli() {
     fi
     
     print_success "ArgoCD CLI installed successfully"
-}
-
-setup_demo_apps() {
-    print_step "Setting up demo applications..."
-    
-    # Create demo namespace
-    kubectl create namespace demo --dry-run=client -o yaml | kubectl apply -f -
-    
-    # Create a simple demo application manifest
-    cat << EOF | kubectl apply -f -
-apiVersion: argoproj.io/v1alpha1
-kind: Application
-metadata:
-  name: guestbook
-  namespace: argocd
-spec:
-  project: default
-  source:
-    repoURL: https://github.com/argoproj/argocd-example-apps.git
-    targetRevision: HEAD
-    path: guestbook
-  destination:
-    server: https://kubernetes.default.svc
-    namespace: demo
-  syncPolicy:
-    automated:
-      prune: false
-      selfHeal: false
-EOF
-    
-    print_success "Demo applications configured"
 }
 
 
@@ -235,11 +239,12 @@ main() {
 
     echo "1. Create Kind cluster"
     echo "2. Install ArgoCD"
-    echo "3. Setup ArgoCD access"
-    echo "4. Install ArgoCD CLI"
-    echo "5. Setup demo apps"
-    echo "6. Get ArgoCD login information"
-    echo "7. Run when you're done to clean up resources"
+    echo "3. Install Argo Workflows"
+    echo "4. Setup ArgoCD access"
+    echo "5. Install ArgoCD CLI"
+    echo "6. Setup demo apps"
+    echo "7. Get ArgoCD login information"
+    echo "8. Run when you're done to clean up resources"
     read -p "Enter your choice: " choice
 
     case $choice in
@@ -250,23 +255,16 @@ main() {
             install_argocd
             ;;
         3)
-            setup_argocd_access
+            install_argo_workflows
             ;;
         4) 
             install_argocd_cli
             ;;
-        5)
-            setup_demo_apps
-            ;;
-        6)  
+        5)  
             getargocdlogin
             ;;
-        7)
+        6)
             cleanup
-            ;;  
-        8)
-            echo "Exiting..."
-            exit 0
             ;;
         *)
             echo "Invalid choice. Exiting..."
