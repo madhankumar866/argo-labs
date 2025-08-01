@@ -1,3 +1,4 @@
+
 #!/bin/bash
 
 # ArgoCD Lab Environment Startup Script
@@ -37,6 +38,103 @@ print_error() {
     echo -e "${RED}[ERROR]${NC} $1"
 }
 
+# Install NGINX Ingress Controller for Kind
+install_kind_ingress() {
+    print_step "Installing NGINX Ingress Controller for Kind..."
+    kubectl apply -f https://raw.githubusercontent.com/kubernetes/ingress-nginx/controller-v1.10.1/deploy/static/provider/kind/deploy.yaml
+    print_success "NGINX Ingress Controller installed."
+}
+
+# Label node(s) as ingress-ready for Ingress controller scheduling
+label_ingress_node() {
+    print_step "Labeling node(s) as ingress-ready..."
+    # For Kind, label all nodes named 'argocd-lab-control-plane' or similar
+    if kind get clusters | grep -q "^${CLUSTER_NAME}$"; then
+        for node in $(kubectl get nodes -o name | sed 's|node/||'); do
+            kubectl label node "$node" ingress-ready=true --overwrite
+            echo "Labeled $node as ingress-ready=true"
+        done
+    # For Minikube, label all nodes in the 'argo' profile
+    elif minikube profile list | grep -q '^| argo-lab '; then
+        for node in $(kubectl get nodes -o name | sed 's|node/||'); do
+            kubectl label node "$node" ingress-ready=true --overwrite
+            echo "Labeled $node as ingress-ready=true"
+        done
+    else
+        print_error "No recognized cluster found for labeling."
+    fi
+    print_success "Node labeling complete."
+}
+
+# minikube addons enable ingress -p argo
+install_minikube_ingress() {
+    print_step "Enabling Ingress addon for Minikube..."
+    minikube addons enable ingress -p argo-lab
+    minikube addons enable ingress-dns -p argo-lab
+    if [ $? -ne 0 ]; then
+        print_error "Failed to enable Ingress addon. Please check the logs."
+        exit 1
+    fi
+    print_success "Ingress addon enabled for Minikube profile 'argo'."
+}
+# Create a single Ingress for ArgoCD and Argo Workflows
+create_argocd_and_workflows_ingress() {
+    print_step "Creating a single Ingress for ArgoCD and Argo Workflows..."
+    # Patch services to ClusterIP
+    kubectl patch svc argocd-server -n argocd -p '{"spec": {"type": "ClusterIP"}}' || true
+    kubectl patch svc argo-server -n argo -p '{"spec": {"type": "ClusterIP"}}' || true
+
+    # Combined Ingress
+    cat <<EOF | kubectl apply -f -
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: argo-cd-ingress
+  namespace: argocd
+  annotations:
+    nginx.ingress.kubernetes.io/backend-protocol: "HTTP"
+spec:
+  ingressClassName: nginx
+  rules:
+  - host: argocd.local
+    http:
+      paths:
+      - path: /
+        pathType: Prefix
+        backend:
+          service:
+            name: argocd-server
+            port:
+              number: 443
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: argo-workflow-ingress
+  namespace: argo
+  annotations:
+    nginx.ingress.kubernetes.io/backend-protocol: "HTTPS"
+spec:
+  ingressClassName: nginx
+  rules:              
+  - host: argo.local
+    http:
+      paths:
+      - path: /
+        pathType: Prefix
+        backend:
+          service:
+            name: argo-server
+            port:
+              number: 2746
+EOF
+
+    print_success "Single Ingress for ArgoCD (argocd.local) and Argo Workflows (argo.local) created."
+    echo "Add the following to your /etc/hosts file:"
+    echo "127.0.0.1 argocd.local argo.local"
+    echo "Access ArgoCD UI at https://argocd.local and Argo Workflows UI at http://argo.local:2746 or http://argo.local"
+}
+
 check_prerequisites() {
     print_step "Checking prerequisites..."
     
@@ -65,7 +163,7 @@ check_prerequisites() {
     print_success "All prerequisites are satisfied"
 }
 
-create_cluster() {
+create_kind_cluster() {
     print_step "Creating Kind cluster '$CLUSTER_NAME'..."
     
     # Check if cluster already exists
@@ -87,7 +185,30 @@ create_cluster() {
     echo
     echo "Cluster Information:"
     kubectl get nodes -o wide
+
+    # Label nodes for ingress
+    # label_ingress_node
 }
+
+# Create a Minikube cluster with profile 'argo' and 2 nodes
+create_minikube_cluster() {
+    print_step "Creating Minikube cluster with profile 'argo' and 2 nodes..."
+    minikube start -p argo-lab --nodes 3 --driver=docker --cpus 3 --memory 3024 --disk-size 15g
+    if [ $? -ne 0 ]; then
+        print_error "Failed to create Minikube cluster. Please check the logs."
+        exit 1
+    fi
+    print_success "Minikube cluster 'argo-lab' with 2 nodes created successfully."
+    echo
+    minikube status -p argo-lab
+    echo "viewing all profiles."
+    minikube profile list
+    echo "### To start a cluster, run: minikube start -p argo"
+
+    # Label nodes for ingress
+    label_ingress_node
+}
+
 
 install_argocd() {
     print_step "Installing ArgoCD..."
@@ -112,11 +233,16 @@ install_argocd() {
     print_step "Setting up ArgoCD access..."
     
     # Patch ArgoCD server service to NodePort for easy access
-    kubectl patch svc argocd-server -n argocd -p '{"spec":{"type":"NodePort","ports":[{"port":80,"targetPort":8080,"nodePort":30080,"name":"http"},{"port":443,"targetPort":8080,"nodePort":30443,"name":"https"}]}}'
-    
+    # kubectl patch svc argocd-server -n argocd -p '{"spec":{"type":"NodePort","ports":[{"port":80,"targetPort":8080,"nodePort":30080,"name":"http"},{"port":443,"targetPort":8080,"nodePort":30443,"name":"https"}]}}'
+
+    # Argocd patch for ingress to allow insecure connections
+    kubectl -n argocd patch deployment argocd-server \
+    --type='json' \
+    -p='[{"op": "add", "path": "/spec/template/spec/containers/0/args/-", "value": "--insecure"}]'
+        
     # Get initial admin password
     ARGOCD_PASSWORD=$(kubectl -n argocd get secret argocd-initial-admin-secret -o jsonpath="{.data.password}" | base64 -d)
-    
+    kubectl -n argocd rollout restart deployment argocd-server
     print_success "ArgoCD access configured"
     
     echo
@@ -133,6 +259,8 @@ install_argocd() {
     echo "============================================"
 }
 install_argo_workflows() {
+
+
     ARGO_WORKFLOWS_VERSION="v3.7.0" # Specify the version you want to install
     print_step "Installing Argo Workflows version $ARGO_WORKFLOWS_VERSION..."
     # Create argo namespace
@@ -163,9 +291,9 @@ install_argo_workflows() {
         echo "####RoleBinding 'argo-default-admin' already exists. Skipping creation."
     fi
     
-    # kubectl -n argo port-forward service/argo-server 2746:2746
-    kubectl patch svc argo-server -n argo -p '{"spec": {"type": "NodePort", "ports": [{"port": 2746, "targetPort": 2746, "nodePort": 32746}]}}'
-    echo "####Argo Workflows UI is available at http://localhost:32746"
+    # Expose via Ingress
+    # install_kind_ingress
+    # create_argo_ingress
 }
 
 
@@ -232,40 +360,73 @@ cleanup() {
 
     echo "Cleanup completed!"
 }
-
+minikubecleanup() {
+    projectname="argo-lab"
+    echo "Deleting Kind cluster '$projectname'..."
+    minikube delete --profile $projectname
+    echo "Cleanup completed!"
+    # kill -9 $(ps aux | grep "minikube tunnel" | awk '{print $2}') 2>/dev/null || true
+    # echo "Tunnel process killed if it was running."
+}
+minikubetunnel() {
+    projectname="argo-lab"
+    echo "Tunneling Minikube cluster '$projectname'..."
+    minikube tunnel --profile $projectname
+    echo "Tunnel started. Press Ctrl+C to stop."
+    curl -k --resolve "argo.local:443:127.0.0.1" https://argo.local
+}
 main() {
     print_header
     check_prerequisites
 
     echo "1. Create Kind cluster"
-    echo "2. Install ArgoCD"
-    echo "3. Install Argo Workflows"
-    echo "4. Setup ArgoCD access"
+    echo "2. Create Minikube cluster"
+    echo "3. Install ArgoCD"
+    echo "4. Install Argo Workflows"
     echo "5. Install ArgoCD CLI"
-    echo "6. Setup demo apps"
-    echo "7. Get ArgoCD login information"
-    echo "8. Run when you're done to clean up resources"
+    echo "6. Get ArgoCD login information"
+    echo "8. Kind Run when you're done to clean up resources"
+    echo "9. Minikube Run when you're done to clean up resources"
+    echo "9. ingress multi step"
+    echo "12. create_argocd_and_workflows_ingress"
+
     read -p "Enter your choice: " choice
 
     case $choice in
         1)
-            create_cluster
+            create_kind_cluster
             ;;
-        2)
+        2)            
+            create_minikube_cluster
+            ;;            
+        3)
             install_argocd
             ;;
-        3)
+        4)
             install_argo_workflows
             ;;
-        4) 
+        5) 
             install_argocd_cli
             ;;
-        5)  
+        6)  
             getargocdlogin
             ;;
-        6)
+        8)
             cleanup
             ;;
+        9)
+            label_ingress_node
+            install_kind_ingress
+            ;;
+        11)
+            minikubecleanup
+            ;;
+        12)
+            create_argocd_and_workflows_ingress
+            ;;
+        13) install_minikube_ingress
+            minikubetunnel
+            ;;            
         *)
             echo "Invalid choice. Exiting..."
             exit 1
