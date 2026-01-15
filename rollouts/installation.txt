@@ -1,0 +1,10 @@
+kubectl create namespace argo-rollouts
+
+kubectl apply -n argo-rollouts -f
+https://github.com/argoproj/argo-rollouts/releases/download/v1.6.4/ins
+tall.yaml
+
+
+kubectl apply -n argo-rollouts -f https://github.com/argoproj/argo-rollouts/releases/latest/download/dashboard-install.yaml
+
+kubectl get svc -n argo-rollouts
